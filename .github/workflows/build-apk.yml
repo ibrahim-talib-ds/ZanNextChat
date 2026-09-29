@@ -1,0 +1,95 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter 3.47.5
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.5'
+          channel: 'stable'
+          cache: true
+
+      - name: Show versions
+        run: |
+          flutter --version
+          java -version
+
+      - name: Verify INTERNET permission
+        run: grep "android.permission.INTERNET" android/app/src/main/AndroidManifest.xml
+
+      - name: Inject Groq key
+        run: |
+          if [ -n "${{ secrets.GROQ_KEY }}" ]; then
+            sed -i "s|PASTE_YOUR_GROQ_KEY_HERE|${{ secrets.GROQ_KEY }}|" lib/chatbot_page.dart
+            echo "✅ Key injected"
+          else
+            echo "❌ GROQ_KEY secret missing"
+            exit 1
+          fi
+
+      - name: Fix build.gradle.kts for AGP 9 + compileSdk 36
+        run: |
+          cat > android/app/build.gradle.kts << 'KEOF'
+          plugins {
+              id("com.android.application")
+              id("kotlin-android")
+              id("dev.flutter.flutter-gradle-plugin")
+          }
+
+          android {
+              namespace = "com.zannext.zannextchat"
+              compileSdk = 36
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              defaultConfig {
+                  applicationId = "com.zannext.zannextchat"
+                  minSdk = 21
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      signingConfig = signingConfigs.getByName("debug")
+                  }
+              }
+          }
+
+          flutter {
+              source = "../.."
+          }
+          KEOF
+          echo "✅ build.gradle.kts: compileSdk = 36"
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build split APKs
+        run: flutter build apk --release --split-per-abi
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: zannextchat-apks
+          path: build/app/outputs/flutter-apk/*.apk
